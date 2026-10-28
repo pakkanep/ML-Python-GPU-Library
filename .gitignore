@@ -1,3 +1,5 @@
 src/build/
 *.so
 .a
+r_hot/
+r_offload/
