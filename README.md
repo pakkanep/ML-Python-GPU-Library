@@ -50,59 +50,68 @@ Matrix multiplication of two 4000×4000 `float32` matrices.
  
 - Unfortunately the OpenCL version is currently very slow, about 7× slower than NumPy. Even though the numpy version is definitely not a weak baseline, as it uses OpenBLAS, which likely uses the whole shabang such as cache/register blocking, SIMD, and all the available CPU cores.  
 - We managed to get a huge speedup by 'only' changing the memory access pattern.
-- In V1 the threads reads addresses in the memory that are a whole row apart and write to the     result in the same way.
-- in V2 we only swap the row (i) and col(j) indexing inside the kernel, so the neighbouring threads access neighbouring memory instead of kilobytes apart in the memory.
+- In V1 the threads reads addresses in the memory that are a whole row apart and write to the result in the same way.
+- in V2 we only swap the row (i) and col(j) indexing inside the kernel, so the neighbouring threads access neighbouring memory instead of kilobytes apart in the    memory.
+
 - The kernel is still a simple implementation without shared memory tiling
   and the OpenCL context is created and the kernel compiled on every call,
   so there is room for optimization.
 
+
+## Coalesced V2 Benchmark
+
+**Setup:** 4000×4000 `float32` matmul, OpenCL on Intel Iris Xe (80 EUs @ 1.3 GHz, peak 1664 GFLOP/s FP32)
+
+| Metric | Value |
+|:-------|------:|
+| Kernel time | 12.321 s |
+| Performance | 10.39 GFLOP/s |
+| % of theoretical peak | 0.62% |
+
+### XPU Offload Analysis
+
+Elapsed time: **15.171 s**
+
+#### Hottest Host Tasks
+
+| Host Task | Task Time | % of Elapsed Time | Task Count |
+|:----------|----------:|------------------:|-----------:|
+| `clFinish` | 12.321 s | 81.2% | 1 |
+| `clBuildProgram` | 0.342 s | 2.3% | 1 |
+| `clCreateBuffer` | 0.227 s | 1.5% | 3 |
+| `clEnqueueReadBuffer` | 0.030 s | 0.2% | 1 |
+| `clEnqueueNDRangeKernel` | 0.007 s | 0.0% | 1 |
+| Others | 0.001 s | 0.0% | 7 |
+
+#### Hottest GPU Computing Tasks
+
+| Computing Task | Total Time | Instance Count | SIMD Utilization |
+|:---------------|-----------:|---------------:|-----------------:|
+| `matmulkernel` | 12.321 s | 1 | 100.0% |
+
+### GPU Hotspots Analysis
+
+Elapsed time: **16.685 s** (GPU time: 14.541 s)
+
+| Metric | Value | Note |
+|:-------|------:|:-----|
+| EU Array Stalled/Idle | 92.5% of GPU busy time | EUs mostly waiting instead of computing |
+| GPU L3 Bandwidth Bound | 87.2% of peak | High L3 traffic while EUs stalled -> poor cache reuse |
+| Occupancy | 99.2% of peak | No kernels flagged for low occupancy |
+| Sampler Busy | 0.1% of peak | Not used (expected for matmul) |
+
+`matmulkernel` spent **14.385 s** bound by GPU L3 bandwidth.
+
+- Good news is that almost all time is spent in the kernel itself; `clFinish` is just the host waiting for it.
+- Occupancy is almost 100, so the launch config is not the problem.
+- The kernel is **L3-bandwidth bound**: every work-item re-reads A and B through L3 with no reuse.
+- tiling A and B in shared local memory, will probably make a good difference.
+
 ## TODO
 - First benchmark the naive kernels with vtune and Nsight 
 - The OpenCL kernel will run on a laptop, so the RAM is shared between CPU and GPU without the neef of a PCIe transfer 
-- Try allocating with CL_MEM_ALLOC_HOST_PTR, or CL_MEM_USE_HOST_PTR, to let the GPU use the memory without a copy
+- Try allocating with CL_MEM_ALLOC_HOST_PTR, or CL_MEM_USE_HOST_PTR, to let the GPU use the memory without a copy (after profiling this has actually a minimal effect)
 
+## notes
 vtune -collect xpu-offload -r r_offload -- python3 src/main.py   host <-> GPU timeline, transfers, kernel times
 vtune -collect gpu-hotspots -r r_hot -- python3 src/main.py     #inside the kernel: EU utilization, memory bandwidth, occupancy
-
-coalesced V1 bechmark:
-Elapsed Time: 15.171s
-
-Hottest Host Tasks
-Host Task               Task Time  % of Elapsed Time(%)  Task Count
-----------------------  ---------  --------------------  ----------
-clFinish                  12.321s                 81.2%           1
-clBuildProgram             0.342s                  2.3%           1
-clCreateBuffer             0.227s                  1.5%           3
-clEnqueueReadBuffer        0.030s                  0.2%           1
-clEnqueueNDRangeKernel     0.007s                  0.0%           1
-[Others]                   0.001s                  0.0%           7
-
-Hottest GPU Computing Tasks
-Computing Task  Total Time  Instance Count  SIMD Utilization(%)
---------------  ----------  --------------  -------------------
-matmulkernel       12.321s               1               100.0%
-
-Elapsed Time: 16.685s
-    GPU Time: 14.541s
-EU Array Stalled/Idle: 92.5% of Elapsed time with GPU busy
- | The percentage of time when the EUs were stalled or idle is high, which has a
- | negative impact on compute-bound applications.
- |
-    GPU L3 Bandwidth Bound: 87.2% of peak value
-     | L3 bandwidth was high when EUs were stalled or idle. Consider improving
-     | cache reuse.
-     |
-
-        Hottest GPU Computing Tasks Bound by GPU L3 Bandwidth
-        Computing Task  Total Time
-        --------------  ----------
-        matmulkernel       14.385s
-    Occupancy: 99.2% of peak value
-
-        Hottest GPU Computing Tasks with Low Occupancy
-        Computing Task  Total Time  SIMD Width  Peak EU Threads Occupancy(%)  Occupancy(%)  SIMD Utilization(%)
-        --------------  ----------  ----------  ----------------------------  ------------  -------------------
-    Sampler Busy: 0.1% of peak value
-
-        Hottest GPU Computing Tasks with High Sampler Usage
-        Computing Task  Total Time
