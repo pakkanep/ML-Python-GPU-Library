@@ -58,59 +58,50 @@ Matrix multiplication of two 4000×4000 `float32` matrices.
   so there is room for optimization.
 
 
-## Coalesced V2 Benchmark
+## GPU Benchmarks
 
 **Setup:** 4000×4000 `float32` matmul, OpenCL on Intel Iris Xe (80 EUs @ 1.3 GHz, peak 1664 GFLOP/s FP32)
 
-| Metric | Value |
-|:-------|------:|
-| Kernel time | 12.321 s |
-| Performance | 10.39 GFLOP/s |
-| % of theoretical peak | 0.62% |
+| Version | Description | Kernel Time (s) | GFLOP/s | % of Peak | Speedup vs. V1 |
+|:--------|:------------|----------------:|--------:|----------:|---------------:|
+| V1 | Naive | 12.321 | 10.39 | 0.62% | 1.00× |
+| V2 | Coalesced memory access | 2.631 | 48.65 | 2.92% | 4.68× |
+| V3 | SLM tiling (16×16) | | | | |
+| V4 | SLM tiling + register blocking | | | | |
 
-### XPU Offload Analysis
+### Host Tasks (XPU Offload)
 
-Elapsed time: **15.171 s**
+| Host Task | V1 | V2 | V3 | V4 |
+|:----------|---:|---:|---:|---:|
+| Elapsed time | 15.171 s | 4.854 s | | |
+| `clFinish` (waiting for kernel) | 12.321 s (81.2%) | 2.631 s (54.2%) | | |
+| `clBuildProgram` | 0.342 s (2.3%) | 0.174 s (3.6%) | | |
+| `clCreateBuffer` (×3) | 0.227 s (1.5%) | 0.052 s (1.1%) | | |
+| `clEnqueueReadBuffer` | 0.030 s (0.2%) | 0.021 s (0.4%) | | |
+| `clEnqueueNDRangeKernel` | 0.007 s (0.0%) | 0.001 s (0.0%) | | |
 
-#### Hottest Host Tasks
+### GPU Hotspots
 
-| Host Task | Task Time | % of Elapsed Time | Task Count |
-|:----------|----------:|------------------:|-----------:|
-| `clFinish` | 12.321 s | 81.2% | 1 |
-| `clBuildProgram` | 0.342 s | 2.3% | 1 |
-| `clCreateBuffer` | 0.227 s | 1.5% | 3 |
-| `clEnqueueReadBuffer` | 0.030 s | 0.2% | 1 |
-| `clEnqueueNDRangeKernel` | 0.007 s | 0.0% | 1 |
-| Others | 0.001 s | 0.0% | 7 |
+| Metric | V1 | V2 | V3 | V4 |
+|:-------|---:|---:|---:|---:|
+| Elapsed time | 16.685 s | 4.549 s | | |
+| GPU time | 14.541 s | 2.908 s | | |
+| GPU time, % of elapsed | 87.2% | 63.9% | | |
+| EU Array Stalled/Idle | 92.5% | 64.0% | | |
+| GPU L3 Bandwidth Bound | 87.2% | 52.0% | | |
+| Occupancy | 99.2% | 98.4% | | |
+| Sampler Busy | 0.1% | 0.3% | | |
 
-#### Hottest GPU Computing Tasks
+### Takeaways
 
-| Computing Task | Total Time | Instance Count | SIMD Utilization |
-|:---------------|-----------:|---------------:|-----------------:|
-| `matmulkernel` | 12.321 s | 1 | 100.0% |
-
-### GPU Hotspots Analysis
-
-Elapsed time: **16.685 s** (GPU time: 14.541 s)
-
-| Metric | Value | Note |
-|:-------|------:|:-----|
-| EU Array Stalled/Idle | 92.5% of GPU busy time | EUs mostly waiting instead of computing |
-| GPU L3 Bandwidth Bound | 87.2% of peak | High L3 traffic while EUs stalled -> poor cache reuse |
-| Occupancy | 99.2% of peak | No kernels flagged for low occupancy |
-| Sampler Busy | 0.1% of peak | Not used (expected for matmul) |
-
-`matmulkernel` spent **14.385 s** bound by GPU L3 bandwidth.
-
-- Good news is that almost all time is spent in the kernel itself; `clFinish` is just the host waiting for it.
-- Occupancy is almost 100, so the launch config is not the problem.
-- The kernel is **L3-bandwidth bound**: every work-item re-reads A and B through L3 with no reuse.
-- tiling A and B in shared local memory, will probably make a good difference.
+- **V1 (naive):** L3-bandwidth bound. Neighboring work-items access memory far apart, so reads can't be combined and EUs spend 92.5% of the time stalled or idle. Occupancy is near peak, so the launch configuration is not the problem.
+- **V2 (coalesced):** Coalescing cut L3 pressure from 87% to 52% and gave a 4.7× speedup, but EUs are still stalled or idle 64% of the time. Every value is still loaded once per use, so the next step is data reuse via SLM tiling. Host overhead now takes about a third of the elapsed time, so measure kernel time separately from start-up costs.
+- **V3 (SLM tiling):** 
+- **V4 (register blocking):**
 
 ## TODO
-- First benchmark the naive kernels with vtune and Nsight 
-- The OpenCL kernel will run on a laptop, so the RAM is shared between CPU and GPU without the neef of a PCIe transfer 
-- Try allocating with CL_MEM_ALLOC_HOST_PTR, or CL_MEM_USE_HOST_PTR, to let the GPU use the memory without a copy (after profiling this has actually a minimal effect)
+- finish the cuda side
+- benchmark the kernels with Nsight 
 
 ## notes
 vtune -collect xpu-offload -r r_offload -- python3 src/main.py   host <-> GPU timeline, transfers, kernel times
