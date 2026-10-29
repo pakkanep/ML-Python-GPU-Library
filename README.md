@@ -101,7 +101,8 @@ Matrix multiplication of two 4000×4000 `float32` matrices.
 
 ## TODO
 - finish the cuda side
-- benchmark the kernels with Nsight 
+- benchmark the kernels with Nsight
+- build the OpenCL kernel only once
 
 ## notes
 vtune -collect xpu-offload -r r_offload -- python3 src/main.py   host <-> GPU timeline, transfers, kernel times

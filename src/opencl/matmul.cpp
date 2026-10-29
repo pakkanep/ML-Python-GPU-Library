@@ -203,6 +203,17 @@ void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K
     );
     check(err, "clCreateBuffer");
 
+    size_t maxWorkGroup;
+    clGetKernelWorkGroupInfo(
+        kernel,
+        device,
+        CL_KERNEL_WORK_GROUP_SIZE,
+        sizeof(maxWorkGroup),
+        &maxWorkGroup,
+        nullptr);
+
+    std::cout << "maxWorkGroup: " << maxWorkGroup << "\n";
+
     // Run kernel
     size_t wlsize[2] = {16, 16};
     size_t wgsize[2] = {

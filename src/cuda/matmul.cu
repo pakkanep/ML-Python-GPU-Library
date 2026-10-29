@@ -79,39 +79,54 @@ void printResult(T *r, const int ny, const int nx)
 }
 
 
-__global__ void matMulCu(int ny, int nx, const float *M1, const float *M2, float *result)
+template <typename T>
+__global__ void matMulCu(int M, int N, int K, const T *M1, const T *M2, T *result)
 {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     
-    if (i >= ny || j >= nx)
+    if (i >= M || j >= N)
     {
         return;
     }
 
-    float sum = 0.0f;
+    T sum = {};
 
-    for (int k = 0; k < nx; ++k)
+    for (int k = 0; k < K; ++k)
     {
-        sum += M1[nx * i + k] * M1[nx * j + k];
+        sum += M1[K * i + k] * M2[N * j + k];
     }
 
-    result[nx * i + j] = sum;
+    result[N * i + j] = sum;
 }
 
-void gpuSetupMatMulRegular(const int ny, const int nx, const float* M1, const float* M2, float* result)
+template<typename T>
+void cuda_matmul(const T* M1, const T* M2, T* result, int M, int N, int K)
 {
     // 1. Allocate memory & copy data to GPU
-    float* A_GPU = NULL;
-    float* B_GPU = NULL;
-    float* C_GPU = NULL;
+    T* A_GPU = NULL;
+    T* B_GPU = NULL;
+    T* C_GPU = NULL;
 
-    CHECK( cudaMalloc((void**)&A_GPU, ny * nx * sizeof(float)) );
-    CHECK( cudaMalloc((void**)&B_GPU, ny * nx * sizeof(float)) );
-    CHECK( cudaMalloc((void**)&C_GPU, ny * nx * sizeof(float)) );
+    CHECK( cudaMalloc((void**)&A_GPU, M * N * sizeof(T)) );
+    CHECK( cudaMalloc((void**)&B_GPU, N * K * sizeof(T)) );
+    CHECK( cudaMalloc((void**)&C_GPU, M * K * sizeof(T)) );
+
+    CHECK(cudaMemcpy(A_GPU, M1, M * N * sizeof(T), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(B_GPU, M2, N * K * sizeof(T), cudaMemcpyHostToDevice));
+    // CHECK(cudaMemcpy(C_GPU, M1, ny * nx * sizeof(float), cudaMemcpyHostToDevice));
 
     // 2. define dimensions and launch kernel
-    // 3. copy data back to host (cpu) AND release memory
+    dim3 dimBlock(16, 16);
+    dim3 dimGrid(divup(n, dimBlock.x), divup(n, dimBlock.y));
+    
+    matMulCu<T><<<dimBlock, dimGrid>>>(M, K, A_GPU, B_GPU, C_GPU);
+    CHECK(cudaGetLastError());
+
+    
+    // 3. copy data back to host AND release memory
+    CHECK(cudaMemcpy(result, C_GPU, M * K * sizeof(T), cudaMemcpyDeviceToHost));
+
     CHECK(cudaFree(A_GPU));
     CHECK(cudaFree(B_GPU));
     CHECK(cudaFree(C_GPU));
@@ -271,13 +286,24 @@ void gpuSetupMatMulBlocked(const int ny, const int nx, const float* M1, const fl
     cuHelpers::CHECK(cudaFree(resultGPU));
 }
 
+/*
+enum class DType { F32, F64, I32 };
 
-// int main()
-// {
-//     int ny = 10;
-//     int nx = 10;
-//     std::vector<float> M1(ny * nx, 0.0f);
-//     std::vector<float> M2(ny * nx, 0.0f);
-//     std::vector<float> result(ny * ny, 0.0f);
-//     gpuSetupMatMulBlocked(ny, nx, M1.data(), M2.data(), result.data());
-// }
+template <typename T>
+void launch_add(const void* a, const void* b, void* out, size_t n) {
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    add_kernel<T><<<blocks, threads>>>(
+        static_cast<const T*>(a), static_cast<const T*>(b),
+        static_cast<T*>(out), n);
+}
+
+void add(DType dt, const void* a, const void* b, void* out, size_t n) {
+    switch (dt) {
+        case DType::F32: launch_add<float>(a, b, out, n);   break;
+        case DType::F64: launch_add<double>(a, b, out, n);  break;
+        case DType::I32: launch_add<int32_t>(a, b, out, n); break;
+        default: throw std::runtime_error("unsupported dtype");
+    }
+}
+*/
