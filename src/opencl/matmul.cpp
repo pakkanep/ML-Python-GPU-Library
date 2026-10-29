@@ -82,30 +82,30 @@ typedef struct
 } Matrix;
 
 
-const char* matmul_kernel_sourceV1 =
-R""(
-__kernel void matmulkernel(
-            int M,
-            int N,
-            int K,
-            __global const float* M1,
-            __global const float* M2,
-            __global float* r)
-{
-    int i = get_global_id(0);
-    int j = get_global_id(1);
-    if (i >= M || j >= N)
-    {
-        return;
-    }
-    float sum = 0.0f;
-    for (int k = 0; k < K; ++k)
-    {
-        sum += M1[K * i + k] * M2[N * k + j];
-    }
-    r[N * i + j] = sum;
-}
-)"";
+// const char* matmul_kernel_sourceV1 =
+// R""(
+// __kernel void matmulkernel(
+//             int M,
+//             int N,
+//             int K,
+//             __global const float* M1,
+//             __global const float* M2,
+//             __global float* r)
+// {
+//     int i = get_global_id(0);
+//     int j = get_global_id(1);
+//     if (i >= M || j >= N)
+//     {
+//         return;
+//     }
+//     float sum = 0.0f;
+//     for (int k = 0; k < K; ++k)
+//     {
+//         sum += M1[K * i + k] * M2[N * k + j];
+//     }
+//     r[N * i + j] = sum;
+// }
+// )"";
 
 const char* matmul_kernel_sourceV2 =
 R""(
@@ -162,7 +162,7 @@ void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K
     cl_program program = clCreateProgramWithSource(
         context,
         1,
-        &matmul_kernel_sourceV1,
+        &matmul_kernel_sourceV2,
         NULL,
         &err
     );
