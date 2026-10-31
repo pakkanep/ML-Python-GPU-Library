@@ -53,7 +53,7 @@ static nb::ndarray<nb::numpy, float, nb::ndim<2>> matmul(Mat A, Mat B)
         {
 #ifdef HAVE_CUDA
             case Backend::CUDA:
-                cuda_matmul( A.data(), B.data(), C.get, int(M), int(N), int(K) );
+                cuda_matmul( A.data(), B.data(), C.get(), int(M), int(N), int(K) );
                 break;
 #endif
 #ifdef HAVE_OPENCL

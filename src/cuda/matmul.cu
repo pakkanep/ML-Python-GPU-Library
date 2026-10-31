@@ -7,6 +7,22 @@
 
 #define BLOCK_SIZE 16
 
+
+bool cuda_available()
+{
+    int num_devices = 0;
+
+    cudaError_t err = cudaGetDeviceCount(&num_devices);
+
+    if (err != cudaSuccess)
+    {
+        cudaGetLastError();
+        return false;
+    }
+
+    return num_devices > 0;
+}
+
 namespace cuHelpers
 {
 
@@ -108,51 +124,34 @@ void cuda_matmul(const T* M1, const T* M2, T* result, int M, int N, int K)
     T* B_GPU = NULL;
     T* C_GPU = NULL;
 
-    CHECK( cudaMalloc((void**)&A_GPU, M * N * sizeof(T)) );
-    CHECK( cudaMalloc((void**)&B_GPU, N * K * sizeof(T)) );
-    CHECK( cudaMalloc((void**)&C_GPU, M * K * sizeof(T)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&A_GPU, M * N * sizeof(T)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&B_GPU, N * K * sizeof(T)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&C_GPU, M * K * sizeof(T)) );
 
-    CHECK(cudaMemcpy(A_GPU, M1, M * N * sizeof(T), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(B_GPU, M2, N * K * sizeof(T), cudaMemcpyHostToDevice));
+    cuHelpers::CHECK(cudaMemcpy(A_GPU, M1, M * N * sizeof(T), cudaMemcpyHostToDevice));
+    cuHelpers::CHECK(cudaMemcpy(B_GPU, M2, N * K * sizeof(T), cudaMemcpyHostToDevice));
     // CHECK(cudaMemcpy(C_GPU, M1, ny * nx * sizeof(float), cudaMemcpyHostToDevice));
 
     // 2. define dimensions and launch kernel
     dim3 dimBlock(16, 16);
-    dim3 dimGrid(divup(n, dimBlock.x), divup(n, dimBlock.y));
+    dim3 dimGrid(
+        cuHelpers::divup(M, dimBlock.x),
+        cuHelpers::divup(N, dimBlock.y)
+    );
     
-    matMulCu<T><<<dimBlock, dimGrid>>>(M, K, A_GPU, B_GPU, C_GPU);
-    CHECK(cudaGetLastError());
+    matMulCu<T><<<dimBlock, dimGrid>>>(M, N, K, A_GPU, B_GPU, C_GPU);
+    cuHelpers::CHECK(cudaGetLastError());
 
     
     // 3. copy data back to host AND release memory
-    CHECK(cudaMemcpy(result, C_GPU, M * K * sizeof(T), cudaMemcpyDeviceToHost));
+    cuHelpers::CHECK(cudaMemcpy(result, C_GPU, M * K * sizeof(T), cudaMemcpyDeviceToHost));
 
-    CHECK(cudaFree(A_GPU));
-    CHECK(cudaFree(B_GPU));
-    CHECK(cudaFree(C_GPU));
+    cuHelpers::CHECK(cudaFree(A_GPU));
+    cuHelpers::CHECK(cudaFree(B_GPU));
+    cuHelpers::CHECK(cudaFree(C_GPU));
 
 }
 
-
-void step(float* r, const float* d, int n) {
-    // Allocate memory & copy data to GPU
-    float* dGPU = NULL;
-    CHECK(cudaMalloc((void**)&dGPU, n * n * sizeof(float)));
-    float* rGPU = NULL;
-    CHECK(cudaMalloc((void**)&rGPU, n * n * sizeof(float)));
-    CHECK(cudaMemcpy(dGPU, d, n * n * sizeof(float), cudaMemcpyHostToDevice));
-
-    // Run kernel
-    dim3 dimBlock(16, 16);
-    dim3 dimGrid(divup(n, dimBlock.x), divup(n, dimBlock.y));
-    mykernel<<<dimGrid, dimBlock>>>(rGPU, dGPU, n);
-    CHECK(cudaGetLastError());
-
-    // Copy data back to CPU & release memory
-    CHECK(cudaMemcpy(r, rGPU, n * n * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK(cudaFree(dGPU));
-    CHECK(cudaFree(rGPU));
-}
 
 __global__ void matMulCuBlocked(const Matrix M1, const Matrix M2, Matrix result)
 {
@@ -307,3 +306,12 @@ void add(DType dt, const void* a, const void* b, void* out, size_t n) {
     }
 }
 */
+
+template void cuda_matmul<float>(
+    const float*,
+    const float*,
+    float*,
+    int,
+    int,
+    int
+);
