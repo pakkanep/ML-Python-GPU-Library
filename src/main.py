@@ -21,4 +21,4 @@ if __name__ == "__main__":
     # numpyMatmul(A, B)
     openCLMatmul(A, B)
     print(f"{time.perf_counter() - t:.3f} s")
-    #print(np.allclose(ml_gpu_library.matmul(A, B), A @ B, atol=1e-4))
+    print(np.allclose(gpulib.matmul(A, B), A @ B, atol=1e-4))

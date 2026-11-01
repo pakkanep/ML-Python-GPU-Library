@@ -35,7 +35,7 @@ static nb::ndarray<nb::numpy, float, nb::ndim<2>> matmul(Mat A, Mat B)
 {
     const size_t M = A.shape(0);
     const size_t K = A.shape(1);
-    const size_t N = A.shape(1);
+    const size_t N = B.shape(1);
     
     if (B.shape(0) != K)
         throw std::invalid_argument(
@@ -74,7 +74,6 @@ static nb::ndarray<nb::numpy, float, nb::ndim<2>> matmul(Mat A, Mat B)
     });
 
     return nb::ndarray<nb::numpy, float, nb::ndim<2>>(data, {M, N}, owner);
-
 }
 
 NB_MODULE(ml_gpu_library, m)

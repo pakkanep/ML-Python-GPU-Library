@@ -7,7 +7,6 @@
 
 #define BLOCK_SIZE 16
 
-
 bool cuda_available()
 {
     int num_devices = 0;
@@ -110,26 +109,34 @@ __global__ void matMulCu(int M, int N, int K, const T *M1, const T *M2, T *resul
 
     for (int k = 0; k < K; ++k)
     {
-        sum += M1[K * i + k] * M2[N * j + k];
+        sum += M1[K * i + k] * M2[N * k + j];
     }
 
     result[N * i + j] = sum;
 }
 
-template<typename T>
-void cuda_matmul(const T* M1, const T* M2, T* result, int M, int N, int K)
+
+void cuda_matmul(
+    const float* M1,
+    const float* M2,
+    float* result,
+    int M,
+    int N,
+    int K
+)
 {
     // 1. Allocate memory & copy data to GPU
-    T* A_GPU = NULL;
-    T* B_GPU = NULL;
-    T* C_GPU = NULL;
+    float* A_GPU = NULL;
+    float* B_GPU = NULL;
+    float* C_GPU = NULL;
 
-    cuHelpers::CHECK( cudaMalloc((void**)&A_GPU, M * N * sizeof(T)) );
-    cuHelpers::CHECK( cudaMalloc((void**)&B_GPU, N * K * sizeof(T)) );
-    cuHelpers::CHECK( cudaMalloc((void**)&C_GPU, M * K * sizeof(T)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&A_GPU, M * K * sizeof(float)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&B_GPU, K * N * sizeof(float)) );
+    cuHelpers::CHECK( cudaMalloc((void**)&C_GPU, M * N * sizeof(float)) );
 
-    cuHelpers::CHECK(cudaMemcpy(A_GPU, M1, M * N * sizeof(T), cudaMemcpyHostToDevice));
-    cuHelpers::CHECK(cudaMemcpy(B_GPU, M2, N * K * sizeof(T), cudaMemcpyHostToDevice));
+
+    cuHelpers::CHECK(cudaMemcpy(A_GPU, M1, M * K * sizeof(float), cudaMemcpyHostToDevice));
+    cuHelpers::CHECK(cudaMemcpy(B_GPU, M2, K * N * sizeof(float), cudaMemcpyHostToDevice));
     // CHECK(cudaMemcpy(C_GPU, M1, ny * nx * sizeof(float), cudaMemcpyHostToDevice));
 
     // 2. define dimensions and launch kernel
@@ -139,23 +146,21 @@ void cuda_matmul(const T* M1, const T* M2, T* result, int M, int N, int K)
         cuHelpers::divup(N, dimBlock.y)
     );
     
-    matMulCu<T><<<dimBlock, dimGrid>>>(M, N, K, A_GPU, B_GPU, C_GPU);
+    matMulCu<float><<<dimGrid, dimBlock>>>(M, N, K, A_GPU, B_GPU, C_GPU);
     cuHelpers::CHECK(cudaGetLastError());
+    std::cout << "matmul succeed" << "\n";
 
-    
     // 3. copy data back to host AND release memory
-    cuHelpers::CHECK(cudaMemcpy(result, C_GPU, M * K * sizeof(T), cudaMemcpyDeviceToHost));
+    cuHelpers::CHECK(cudaMemcpy(result, C_GPU, M * N * sizeof(float), cudaMemcpyDeviceToHost));
 
     cuHelpers::CHECK(cudaFree(A_GPU));
     cuHelpers::CHECK(cudaFree(B_GPU));
     cuHelpers::CHECK(cudaFree(C_GPU));
-
 }
 
 
 __global__ void matMulCuBlocked(const Matrix M1, const Matrix M2, Matrix result)
 {
-
     int blockRow = blockIdx.y;
     int blockCol = blockIdx.x;
 
@@ -307,11 +312,3 @@ void add(DType dt, const void* a, const void* b, void* out, size_t n) {
 }
 */
 
-template void cuda_matmul<float>(
-    const float*,
-    const float*,
-    float*,
-    int,
-    int,
-    int
-);
