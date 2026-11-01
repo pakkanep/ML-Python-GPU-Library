@@ -32,8 +32,15 @@ endif()
 
 find_package(OpenCL)
 if(OpenCL_FOUND)
-  target_sources(ml_gpu_library PRIVATE opencl/matmul.cpp) # this compiles if cuda not found
-  target_link_libraries(ml_gpu_library PRIVATE OpenCL::OpenCL) 
-  target_compile_definitions(ml_gpu_library PRIVATE HAVE_OPENCL CL_TARGET_OPENCL_VERSION=120)
+  target_sources(ml_gpu_library PRIVATE opencl/matmul.cpp)
+  target_link_libraries(ml_gpu_library PRIVATE OpenCL::OpenCL)
+  target_compile_definitions(ml_gpu_library PRIVATE
+    HAVE_OPENCL
+    CL_TARGET_OPENCL_VERSION=300
+    CL_HPP_TARGET_OPENCL_VERSION=300
+    CL_HPP_MINIMUM_OPENCL_VERSION=110
+    CL_HPP_ENABLE_EXCEPTIONS
+    OPENCL_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/opencl"
+  )
   message(STATUS "OpenCL backend: ON")
 endif()

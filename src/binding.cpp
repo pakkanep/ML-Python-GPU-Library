@@ -58,7 +58,9 @@ static nb::ndarray<nb::numpy, float, nb::ndim<2>> matmul(Mat A, Mat B)
 #endif
 #ifdef HAVE_OPENCL
             case Backend::OpenCL:
+                // opencl_matmul( A.data(), B.data(), C.get(), int(M), int(N), int(K) );
                 opencl_matmul( A.data(), B.data(), C.get(), int(M), int(N), int(K) );
+
                 break;
 #endif
             default:

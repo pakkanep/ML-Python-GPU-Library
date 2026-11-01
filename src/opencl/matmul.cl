@@ -1,3 +1,5 @@
+#define BLOCK_SIZE 16
+
 typedef struct
 {
     int width;
@@ -27,22 +29,22 @@ inline Matrix GetSubMatrix(Matrix A, int row, int col)
 }
 
 __kernel void matmul_opencl(
-    __global const float* A,
-    __global const float* B,
-    __global const float* C,
     const int M,
     const int N,
-    const int K
+    const int K,
+    __global const float* A,
+    __global const float* B,
+    __global float* C
 )
 {
-    const int i = get_global_id(0);
-    const int j = get_global_id(1);
+    const int j = get_global_id(0);
+    const int i = get_global_id(1);
 
     if (i >= M || j >= N)
     {
         return;
     }
-    float sum = {};
+    float sum = 0.0f;
     for (int k = 0; k < K; ++k)
     {
         sum += A[K * i + k] * B[N * k + j];

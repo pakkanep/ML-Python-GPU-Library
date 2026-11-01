@@ -1,12 +1,8 @@
 #include <cstdlib>
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include "../backend.h" 
-
-
-#define CL_HPP_ENABLE_EXCEPTIONS
-#define CL_HPP_TARGET_OPENCL_VERSION 300
-#define CL_HPP_MINIMUM_OPENCL_VERSION 120
 
 #ifdef __APPLE__
     #include "OpenCL/opencl.h"
@@ -16,6 +12,7 @@
 
 class ClMatmul
 {
+    public:
     explicit ClMatmul(const std::string& kernelSource)
     {
         device_  = pickGpu();
@@ -28,8 +25,10 @@ class ClMatmul
             std::cerr << program_.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_) << "\n";
             throw;
         }
-        kernel_ = cl::Kernel(program_, "matmul_tiled");
+        kernel_ = cl::Kernel(program_, "matmul_opencl");
     }
+
+    
 
     double run(
         const cl::Buffer& A,
@@ -103,15 +102,7 @@ bool opencl_available()
     return false;
 }
 
-static inline int divup(int a, int b)
-{
-    return (a + b - 1) / b;
-}
 
-static inline int roundup(int a, int b)
-{
-    return divup(a, b) * b;
-}
 
 static inline void check(cl_int err, const char* context)
 {
@@ -145,6 +136,7 @@ static inline void check_build(cl_program program, cl_device_id device, cl_int e
     }
 }
 
+
 #define CHECK(x) check(x, #x)
 
 
@@ -172,9 +164,16 @@ __kernel void matmulkernel(
     r[N * i + j] = sum;
 }
 )"";
+static inline int divup(int a, int b) {
+    return (a + b - 1)/b;
+}
+
+static inline int roundup(int a, int b) {
+    return divup(a, b) * b;
+}
 
 // MatMul: C (M x N) = A (M x K) * B (K x N)
-void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K)
+void opencl_matmulOLD(const float* A, const float* B, float* C, int M, int N, int K)
 {
     // M = rows of A = rows of C
     // K = cols of A = rows of B
@@ -295,5 +294,36 @@ void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K
     CHECK(clReleaseProgram(program));
     CHECK(clReleaseCommandQueue(queue));
     CHECK(clReleaseContext(context));
+
+}
+
+// MatMul: C (M x N) = A (M x K) * B (K x N)
+void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K)
+{
+    // M = rows of A = rows of C
+    // K = cols of A = rows of B
+    // N = cols of B = cols of C
+
+    std::ifstream kernel_file(OPENCL_KERNEL_DIR "/matmul.cl");
+    if (!kernel_file)
+    { 
+        throw std::runtime_error("could not open matmul.cl");
+    }
+    std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
+
+    ClMatmul mm(src);
+    auto& context = mm.context();
+    auto& q = mm.queue();
+
+    cl::Buffer A_GPU(context, CL_MEM_READ_ONLY,  M * K * sizeof(float));
+    cl::Buffer B_GPU(context, CL_MEM_READ_ONLY,  K * N * sizeof(float));
+    cl::Buffer C_GPU(context, CL_MEM_WRITE_ONLY, M * N * sizeof(float));
+
+    q.enqueueWriteBuffer(A_GPU, CL_TRUE, 0, M * K * sizeof(float), A);
+    q.enqueueWriteBuffer(B_GPU, CL_TRUE, 0, K * N * sizeof(float), B);
+
+    mm.run(A_GPU, B_GPU, C_GPU, M, N, K);
+
+    q.enqueueReadBuffer(C_GPU, CL_TRUE, 0, M * N * sizeof(float), C);
 
 }
