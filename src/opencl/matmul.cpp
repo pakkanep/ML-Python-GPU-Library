@@ -3,11 +3,85 @@
 #include <vector>
 #include "../backend.h" 
 
+
+#define CL_HPP_ENABLE_EXCEPTIONS
+#define CL_HPP_TARGET_OPENCL_VERSION 300
+#define CL_HPP_MINIMUM_OPENCL_VERSION 120
+
 #ifdef __APPLE__
     #include "OpenCL/opencl.h"
 #else
-    #include "CL/cl.h"
+    #include "CL/opencl.hpp"
 #endif
+
+class ClMatmul
+{
+    explicit ClMatmul(const std::string& kernelSource)
+    {
+        device_  = pickGpu();
+        context_ = cl::Context(device_);
+        queue_   = cl::CommandQueue(context_, device_, CL_QUEUE_PROFILING_ENABLE);
+        program_ = cl::Program(context_, kernelSource);
+        try {
+            program_.build("-DTILE=16");
+        } catch (const cl::BuildError&) {
+            std::cerr << program_.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_) << "\n";
+            throw;
+        }
+        kernel_ = cl::Kernel(program_, "matmul_tiled");
+    }
+
+    double run(
+        const cl::Buffer& A,
+        const cl::Buffer& B,
+        cl::Buffer& C,
+        int M,
+        int N,
+        int K
+    )
+    {
+        kernel_.setArg(0, M);
+        kernel_.setArg(1, N); 
+        kernel_.setArg(2, K);
+        kernel_.setArg(3, A);
+        kernel_.setArg(4, B);
+        kernel_.setArg(5, C);
+
+        cl::NDRange local(16, 16);
+        cl::NDRange global(divup(N, 16) * 16, divup(M, 16) * 16);
+        cl::Event ev;
+        queue_.enqueueNDRangeKernel(kernel_, cl::NullRange, global, local, nullptr, &ev);
+        ev.wait();
+        auto t0 = ev.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+        auto t1 = ev.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+        return (t1 - t0) * 1e-6;
+    }
+
+    cl::Context& context() { return context_; }
+    cl::CommandQueue& queue() { return queue_; }
+
+    private:
+
+    static cl::Device pickGpu()
+    {
+        std::vector<cl::Platform> platforms;
+        cl::Platform::get(&platforms);
+        for (auto& p : platforms) {
+            std::vector<cl::Device> devs;
+            try { p.getDevices(CL_DEVICE_TYPE_GPU, &devs); } catch (const cl::Error&) { continue; }
+            if (!devs.empty()) return devs.front();
+        }
+        throw std::runtime_error("no OpenCL GPU found");
+    }
+
+    static size_t divup(int a, int b) { return (a + b - 1) / b; }
+
+    cl::Device device_;
+    cl::Context context_;
+    cl::CommandQueue queue_;
+    cl::Program program_;
+    cl::Kernel kernel_;
+};
 
 
 bool opencl_available()
@@ -73,39 +147,6 @@ static inline void check_build(cl_program program, cl_device_id device, cl_int e
 
 #define CHECK(x) check(x, #x)
 
-typedef struct
-{
-    int width;
-    int height;
-    int stride;
-    float* elements;
-} Matrix;
-
-
-// const char* matmul_kernel_sourceV1 =
-// R""(
-// __kernel void matmulkernel(
-//             int M,
-//             int N,
-//             int K,
-//             __global const float* M1,
-//             __global const float* M2,
-//             __global float* r)
-// {
-//     int i = get_global_id(0);
-//     int j = get_global_id(1);
-//     if (i >= M || j >= N)
-//     {
-//         return;
-//     }
-//     float sum = 0.0f;
-//     for (int k = 0; k < K; ++k)
-//     {
-//         sum += M1[K * i + k] * M2[N * k + j];
-//     }
-//     r[N * i + j] = sum;
-// }
-// )"";
 
 const char* matmul_kernel_sourceV2 =
 R""(
