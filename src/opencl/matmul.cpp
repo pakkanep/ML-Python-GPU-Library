@@ -1,7 +1,10 @@
+#define CL_HPP_ENABLE_EXCEPTIONS
+
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <map>
 #include "../backend.h" 
 
 #ifdef __APPLE__
@@ -10,77 +13,175 @@
     #include "CL/opencl.hpp"
 #endif
 
-class ClMatmul
+
+/*
+TODOS:
+openCL available does the same thing as pick GPU
+
+
+*/
+
+
+
+constexpr int TILE = 16;
+
+static std::string readFile(const std::string& path)
 {
-    public:
-    explicit ClMatmul(const std::string& kernelSource)
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("could not open " + path);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+class ClRuntime
+{
+public:
+    static ClRuntime& get()
     {
-        device_  = pickGpu();
-        context_ = cl::Context(device_);
-        queue_   = cl::CommandQueue(context_, device_, CL_QUEUE_PROFILING_ENABLE);
-        program_ = cl::Program(context_, kernelSource);
-        try {
-            program_.build("-DTILE=16");
-        } catch (const cl::BuildError&) {
-            std::cerr << program_.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_) << "\n";
-            throw;
-        }
-        kernel_ = cl::Kernel(program_, "matmul_opencl");
+        static ClRuntime instance;
+        return instance;
     }
 
-    
-
-    double run(
-        const cl::Buffer& A,
-        const cl::Buffer& B,
-        cl::Buffer& C,
-        int M,
-        int N,
-        int K
-    )
-    {
-        kernel_.setArg(0, M);
-        kernel_.setArg(1, N); 
-        kernel_.setArg(2, K);
-        kernel_.setArg(3, A);
-        kernel_.setArg(4, B);
-        kernel_.setArg(5, C);
-
-        cl::NDRange local(16, 16);
-        cl::NDRange global(divup(N, 16) * 16, divup(M, 16) * 16);
-        cl::Event ev;
-        queue_.enqueueNDRangeKernel(kernel_, cl::NullRange, global, local, nullptr, &ev);
-        ev.wait();
-        auto t0 = ev.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-        auto t1 = ev.getProfilingInfo<CL_PROFILING_COMMAND_END>();
-        return (t1 - t0) * 1e-6;
-    }
-
-    cl::Context& context() { return context_; }
-    cl::CommandQueue& queue() { return queue_; }
-
-    private:
+    ClRuntime(const ClRuntime&) = delete;
+    ClRuntime& operator=(const ClRuntime&) = delete;
 
     static cl::Device pickGpu()
     {
         std::vector<cl::Platform> platforms;
         cl::Platform::get(&platforms);
-        for (auto& p : platforms) {
+
+        for (auto& p : platforms)
+        {
             std::vector<cl::Device> devs;
-            try { p.getDevices(CL_DEVICE_TYPE_GPU, &devs); } catch (const cl::Error&) { continue; }
-            if (!devs.empty()) return devs.front();
+
+            try
+            {
+                p.getDevices(CL_DEVICE_TYPE_GPU, &devs);
+            }
+            catch (const cl::Error&)
+            {
+                continue;
+            }
+
+            if (!devs.empty())
+                return devs.front();
         }
-        throw std::runtime_error("no OpenCL GPU found");
+
+        throw std::runtime_error("No OpenCL GPU found");
     }
 
-    static size_t divup(int a, int b) { return (a + b - 1) / b; }
+    cl::Context& context() { return context_; }
+    cl::CommandQueue& queue() { return queue_; }
+
+    cl::Kernel& kernel(const std::string& name)
+    {
+        auto it = kernels_.find(name);
+
+        if (it == kernels_.end())
+            throw std::runtime_error("Kernel not found: " + name);
+
+        return it->second;
+    }
+
+private:
+    ClRuntime()
+    {
+        device_ = pickGpu();
+
+        context_ = cl::Context(device_);
+
+        queue_ = cl::CommandQueue(
+            context_,
+            device_,
+            CL_QUEUE_PROFILING_ENABLE
+        );
+
+        std::string src = readFile(
+            OPENCL_KERNEL_DIR "/matmul.cl"
+        );
+
+        program_ = cl::Program(context_, src);
+
+        try
+        {
+            std::string options =
+                "-DTILE=" + std::to_string(TILE);
+
+            program_.build(options.c_str());
+        }
+        catch (const cl::Error&)
+        {
+            std::cerr
+                << program_.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_)
+                << "\n";
+
+            throw;
+        }
+
+        // Register the kernels
+        kernels_["matmul"] = cl::Kernel(program_, "matmul");
+    }
 
     cl::Device device_;
     cl::Context context_;
     cl::CommandQueue queue_;
     cl::Program program_;
-    cl::Kernel kernel_;
+
+    std::unordered_map<std::string, cl::Kernel> kernels_;
 };
+
+// 2. Data on the GPU: owns a buffer plus its shape
+class DeviceMatrix
+{
+public:
+    DeviceMatrix(int rows, int cols)
+        : rows_(rows), cols_(cols),
+          buf_(ClRuntime::get().context(), CL_MEM_READ_WRITE, sizeof(float) * rows * cols) {}
+
+    void upload(const float* src);         // enqueueWriteBuffer
+    void download(float* dst) const;       // enqueueReadBuffer
+
+    int rows() const { return rows_; }
+    int cols() const { return cols_; }
+    const cl::Buffer& buffer() const { return buf_; }
+
+private:
+    int rows_, cols_;
+    cl::Buffer buf_;
+};
+
+
+
+void matmul(const DeviceMatrix& A, const DeviceMatrix& B, DeviceMatrix& C)
+{
+    if (A.cols() != B.rows() || C.rows() != A.rows() || C.cols() != B.cols())
+        throw std::invalid_argument("matmul: shape mismatch");
+
+    const int M = A.rows(), K = A.cols(), N = B.cols();
+
+    auto& rt = ClRuntime::get();                    // first call initializes, later calls just return it
+    cl::Kernel& k = rt.kernel("matmul_opencl");     // compiled once, cached
+
+    k.setArg(0, M);
+    k.setArg(1, N);
+    k.setArg(2, K);
+    k.setArg(3, A.buffer());
+    k.setArg(4, B.buffer());
+    k.setArg(5, C.buffer());
+
+    cl::NDRange local(TILE, TILE);
+    cl::NDRange global(roundup(N, TILE), roundup(M, TILE));
+    rt.queue().enqueueNDRangeKernel(k, cl::NullRange, global, local);
+}
+
+// Convenience wrapper for raw host arrays
+void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K)
+{
+    DeviceMatrix dA(M, K), dB(K, N), dC(M, N);
+    dA.upload(A);
+    dB.upload(B);
+    matmul(dA, dB, dC);
+    dC.download(C);   // blocking read, so it also waits for the kernel to finish
+}
 
 
 bool opencl_available()
@@ -101,8 +202,6 @@ bool opencl_available()
     }
     return false;
 }
-
-
 
 static inline void check(cl_int err, const char* context)
 {
@@ -164,11 +263,13 @@ __kernel void matmulkernel(
     r[N * i + j] = sum;
 }
 )"";
-static inline int divup(int a, int b) {
+static inline int divup(int a, int b)
+{
     return (a + b - 1)/b;
 }
 
-static inline int roundup(int a, int b) {
+static inline int roundup(int a, int b)
+{
     return divup(a, b) * b;
 }
 
@@ -297,33 +398,3 @@ void opencl_matmulOLD(const float* A, const float* B, float* C, int M, int N, in
 
 }
 
-// MatMul: C (M x N) = A (M x K) * B (K x N)
-void opencl_matmul(const float* A, const float* B, float* C, int M, int N, int K)
-{
-    // M = rows of A = rows of C
-    // K = cols of A = rows of B
-    // N = cols of B = cols of C
-
-    std::ifstream kernel_file(OPENCL_KERNEL_DIR "/matmul.cl");
-    if (!kernel_file)
-    { 
-        throw std::runtime_error("could not open matmul.cl");
-    }
-    std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
-
-    ClMatmul mm(src);
-    auto& context = mm.context();
-    auto& q = mm.queue();
-
-    cl::Buffer A_GPU(context, CL_MEM_READ_ONLY,  M * K * sizeof(float));
-    cl::Buffer B_GPU(context, CL_MEM_READ_ONLY,  K * N * sizeof(float));
-    cl::Buffer C_GPU(context, CL_MEM_WRITE_ONLY, M * N * sizeof(float));
-
-    q.enqueueWriteBuffer(A_GPU, CL_TRUE, 0, M * K * sizeof(float), A);
-    q.enqueueWriteBuffer(B_GPU, CL_TRUE, 0, K * N * sizeof(float), B);
-
-    mm.run(A_GPU, B_GPU, C_GPU, M, N, K);
-
-    q.enqueueReadBuffer(C_GPU, CL_TRUE, 0, M * N * sizeof(float), C);
-
-}

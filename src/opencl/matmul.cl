@@ -1,33 +1,3 @@
-#define BLOCK_SIZE 16
-
-typedef struct
-{
-    int width;
-    int height;
-    int stride;
-    __global float* elements;
-} Matrix;
-
-inline float GetElement(const Matrix A, int row, int col)
-{
-    return A.elements[A.stride * row + col];
-}
-
-inline void SetElement(Matrix A, int row, int col, float value)
-{
-    A.elements[A.stride * row + col] = value;
-}
-
-inline Matrix GetSubMatrix(Matrix A, int row, int col)
-{
-    Matrix sub;
-    sub.width    = BLOCK_SIZE;
-    sub.height   = BLOCK_SIZE;
-    sub.stride   = A.stride;
-    sub.elements = &A.elements[A.stride * BLOCK_SIZE * row + BLOCK_SIZE * col];
-    return sub;
-}
-
 __kernel void matmul_opencl(
     const int M,
     const int N,
