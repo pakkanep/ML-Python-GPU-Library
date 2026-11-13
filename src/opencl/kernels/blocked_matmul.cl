@@ -28,8 +28,12 @@ inline Matrix GetSubMatrix(Matrix A, int row, int col)
     return sub;
 }
 
-// why pass ASub and BSub as params
-void __kernel blocked_matmul(Matrix A, Matrix B, Matrix C)
+
+inline void blockedMatmul(
+    Matrix A, Matrix B, Matrix C,
+    __local float (*As)[BLOCK_SIZE],
+    __local float (*Bs)[BLOCK_SIZE]
+)
 {
     const int blockRow = get_group_id(1);
     const int blockCol = get_group_id(0);
@@ -39,9 +43,6 @@ void __kernel blocked_matmul(Matrix A, Matrix B, Matrix C)
     const int globalRow = blockRow * BLOCK_SIZE + row;
     const int globalCol = blockCol * BLOCK_SIZE + col;
     
-    // Each thread block computes one sub-matrix Csub of C
-    __local float As[BLOCK_SIZE][BLOCK_SIZE];
-    __local float Bs[BLOCK_SIZE][BLOCK_SIZE];
 
     // each thread in the block needs its own local accumulator
     float Cval = 0.0f;
@@ -61,14 +62,12 @@ void __kernel blocked_matmul(Matrix A, Matrix B, Matrix C)
         Bs[row][col] = (bRow < B.height && globalCol < B.width) ? GetElement(BSub, row, col) : 0.0f;
 
         barrier(CLK_LOCAL_MEM_FENCE);
+        
         for (int k = 0; k < BLOCK_SIZE; ++k)
         {
-            Cval += ASub[row][k] * BSub[k][col];
-            // Synchronize to make sure that the preceding
-            // computation is done before loading two new
-            // sub-matrices of A and B in the next iteration
-            barrier(CLK_LOCAL_MEM_FENCE);
+            Cval += As[row][k] * Bs[k][col];
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
 
     // Write Csub to device memory
@@ -82,11 +81,16 @@ void __kernel blocked_matmul(Matrix A, Matrix B, Matrix C)
 __kernel void matrixMulKernel(
     int Awidth, int Aheight, int Astride, __global float* Aelements,
     int Bwidth, int Bheight, int Bstride, __global float* Belements,
-    int Cwidth, int Cheight, int Cstride, __global float* Celements,
+    int Cwidth, int Cheight, int Cstride, __global float* Celements
 )
 {
     Matrix A = { Awidth, Aheight, Astride, Aelements };
     Matrix B = { Bwidth, Bheight, Bstride, Belements };
     Matrix C = { Cwidth, Cheight, Cstride, Celements };
-    MatMul(A, B, C);
+    
+    // do this here as:
+    // non-kernel function variable cannot be declared in local address space
+    __local float As[BLOCK_SIZE][BLOCK_SIZE+1];
+    __local float Bs[BLOCK_SIZE][BLOCK_SIZE+1];
+    blockedMatmul(A, B, C, As, Bs);
 } 

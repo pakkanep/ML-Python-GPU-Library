@@ -1,5 +1,3 @@
-#define CL_HPP_ENABLE_EXCEPTIONS
-
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
@@ -17,11 +15,19 @@
 /*
 TODOS:
 openCL available does the same thing as pick GPU
-
-
+move CL runtime code in own header and source files 
+move device matrix code in own header and source files
 */
 
+static inline int divup(int a, int b)
+{
+    return (a + b - 1)/b;
+}
 
+static inline int roundup(int a, int b)
+{
+    return divup(a, b) * b;
+}
 
 constexpr int TILE = 16;
 
@@ -95,9 +101,12 @@ private:
             CL_QUEUE_PROFILING_ENABLE
         );
 
-        std::string src = readFile(
-            OPENCL_KERNEL_DIR "/matmul.cl"
-        );
+        std::string src;
+
+        src += readFile(OPENCL_KERNEL_DIR "/matmul.cl");
+        src += "\n";
+        src += readFile(OPENCL_KERNEL_DIR "/blocked_matmul.cl");
+
 
         program_ = cl::Program(context_, src);
 
@@ -117,8 +126,8 @@ private:
             throw;
         }
 
-        // Register the kernels
-        kernels_["matmul"] = cl::Kernel(program_, "matmul");
+        kernels_["matmul_opencl"] = cl::Kernel(program_, "matmul_opencl");
+        kernels_["matrixMulKernel"] = cl::Kernel(program_, "matrixMulKernel");
     }
 
     cl::Device device_;
@@ -129,7 +138,7 @@ private:
     std::unordered_map<std::string, cl::Kernel> kernels_;
 };
 
-// 2. Data on the GPU: owns a buffer plus its shape
+
 class DeviceMatrix
 {
 public:
@@ -137,8 +146,31 @@ public:
         : rows_(rows), cols_(cols),
           buf_(ClRuntime::get().context(), CL_MEM_READ_WRITE, sizeof(float) * rows * cols) {}
 
-    void upload(const float* src);         // enqueueWriteBuffer
-    void download(float* dst) const;       // enqueueReadBuffer
+    void upload(const float* src)
+    {
+        auto& queue = ClRuntime::get().queue();
+
+        queue.enqueueWriteBuffer(
+            buf_,
+            CL_TRUE,
+            0,
+            sizeof(float) * rows_ * cols_,
+            src
+        );
+    }
+    
+    void download(float* dst) const
+    {
+        auto& queue = ClRuntime::get().queue();
+
+        queue.enqueueReadBuffer(
+            buf_,
+            CL_TRUE,
+            0,
+            sizeof(float) * rows_ * cols_,
+            dst
+        );
+    }
 
     int rows() const { return rows_; }
     int cols() const { return cols_; }
@@ -159,18 +191,52 @@ void matmul(const DeviceMatrix& A, const DeviceMatrix& B, DeviceMatrix& C)
     const int M = A.rows(), K = A.cols(), N = B.cols();
 
     auto& rt = ClRuntime::get();                    // first call initializes, later calls just return it
-    cl::Kernel& k = rt.kernel("matmul_opencl");     // compiled once, cached
+    cl::Kernel k = rt.kernel("matrixMulKernel");
 
-    k.setArg(0, M);
-    k.setArg(1, N);
+    // A: M x K
+    k.setArg(0, K);
+    k.setArg(1, M);
     k.setArg(2, K);
     k.setArg(3, A.buffer());
-    k.setArg(4, B.buffer());
-    k.setArg(5, C.buffer());
 
-    cl::NDRange local(TILE, TILE);
-    cl::NDRange global(roundup(N, TILE), roundup(M, TILE));
-    rt.queue().enqueueNDRangeKernel(k, cl::NullRange, global, local);
+    // B: K x N
+    k.setArg(4, N);
+    k.setArg(5, K);
+    k.setArg(6, N);
+    k.setArg(7, B.buffer());
+
+    // C: M x N
+    k.setArg(8, N);
+    k.setArg(9, M);
+    k.setArg(10, N);
+    k.setArg(11, C.buffer());
+
+    auto roundUp = [](size_t x) {
+        return ((x + TILE - 1) / TILE) * TILE;
+    };
+
+    cl::Event event;
+
+    rt.queue().enqueueNDRangeKernel(
+        k,
+        cl::NullRange,
+        cl::NDRange(roundUp(N), roundUp(M)),
+        cl::NDRange(TILE, TILE),
+        nullptr,
+        &event
+    );
+
+    event.wait();
+
+    cl_ulong start =
+        event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+
+    cl_ulong end =
+        event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+
+    double kernel_ms = (end - start) * 1e-6;
+
+    std::cout << "Kernel time: " << kernel_ms << " ms\n";
 }
 
 // Convenience wrapper for raw host arrays
@@ -240,38 +306,31 @@ static inline void check_build(cl_program program, cl_device_id device, cl_int e
 
 
 const char* matmul_kernel_sourceV2 =
-R""(
-__kernel void matmulkernel(
-            int M,
-            int N,
-            int K,
-            __global const float* M1,
-            __global const float* M2,
-            __global float* r)
-{
-    int j = get_global_id(0);
-    int i = get_global_id(1);
-    if (i >= M || j >= N)
+    R""(
+    __kernel void matmulkernel(
+                int M,
+                int N,
+                int K,
+                __global const float* M1,
+                __global const float* M2,
+                __global float* r)
     {
-        return;
+        int j = get_global_id(0);
+        int i = get_global_id(1);
+        if (i >= M || j >= N)
+        {
+            return;
+        }
+        float sum = 0.0f;
+        for (int k = 0; k < K; ++k)
+        {
+            sum += M1[K * i + k] * M2[N * k + j];
+        }
+        r[N * i + j] = sum;
     }
-    float sum = 0.0f;
-    for (int k = 0; k < K; ++k)
-    {
-        sum += M1[K * i + k] * M2[N * k + j];
-    }
-    r[N * i + j] = sum;
-}
-)"";
-static inline int divup(int a, int b)
-{
-    return (a + b - 1)/b;
-}
+    )"";
 
-static inline int roundup(int a, int b)
-{
-    return divup(a, b) * b;
-}
+
 
 // MatMul: C (M x N) = A (M x K) * B (K x N)
 void opencl_matmulOLD(const float* A, const float* B, float* C, int M, int N, int K)
