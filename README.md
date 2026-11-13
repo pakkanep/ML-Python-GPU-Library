@@ -50,7 +50,6 @@ Matrix multiplication of two 4000×4000 `float32` matrices.
 | myLib V1 (OpenCL, naive) | 16.080 s | 16.710 s |
 | myLib V2 (OpenCL, coalesced) | 3.545 s | 4.021 s |
 | myLib V3 (OpenCL, SLM tiled 16×16) | 1.451 s | — |
-| NumPy (BLAS), latest | 0.325 s | — |
 
 The latest measurements use a Python timer around the individual matrix multiplication call. Whole-script timings were not recorded for the latest benchmark.
 
